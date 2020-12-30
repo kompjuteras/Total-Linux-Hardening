@@ -1,0 +1,257 @@
+## This file contains the auditctl rules that are loaded
+## whenever the audit daemon is started via the initscripts.
+## The rules are simply the parameters that would be passed
+## to auditctl.
+##
+## First rule - delete all
+-D
+
+## Increase the buffers to survive stress events.
+## Make this bigger for busy systems
+-b 8192
+
+## Set failure mode to panic
+-f 0
+
+## NOTE:
+## 1) if this is being used on a 32 bit machine, comment out the b64 lines
+## 2) These rules assume that login under the root account is not allowed.
+## 3) It is also assumed that 500 represents the first usable user account.
+## 4) If these rules generate too much spurious data for your tastes, limit the
+## the syscall file rules with a directory, like -F dir=/etc
+## 5) You can search for the results on the key fields in the rules
+
+## Things that could affect time
+# CCE 14051-7 Using adjtimex instead of adjtime.  adjtime is not a valid syscall but is required for SCAP.
+#
+-a exit,always -F arch=b32 -S adjtimex -S settimeofday -S stime -S clock_settime -k time-change
+-a exit,always -F arch=b64 -S adjtimex -S settimeofday -S clock_settime -k time-change
+-w /etc/localtime -p wa -k time-change
+
+## Things that affect identity
+# CCE 14829-6
+-w /etc/group -p wa -k identity
+-w /etc/passwd -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/security/opasswd -p wa -k identity
+
+## Things that could affect system locale
+# CCE 14816-3
+-a exit,always -F arch=b32 -S sethostname -S setdomainname -k system-locale
+-a exit,always -F arch=b64 -S sethostname -S setdomainname -k system-locale
+-w /etc/issue -p wa -k system-locale
+-w /etc/issue.net -p wa -k system-locale
+-w /etc/hosts -p wa -k system-locale
+-w /etc/sysconfig/network -p wa -k system-locale
+
+## Things that could affect MAC policy
+# CCE 14821-3
+-w /etc/selinux/ -p wa -k MAC-policy
+
+## Record Attempts to Alter Logon and Logout Events
+# CCE 14904-7
+-w /var/log/faillog -p wa -k logins
+-w /var/log/lastlog -p wa -k logins
+
+##- Process and session initiation (unsuccessful and successful)
+# CCE 14679-5
+-w /var/run/utmp -p wa -k session
+-w /var/log/btmp -p wa -k session
+-w /var/log/wtmp -p wa -k session
+
+## Discretionary access control permission modification (unsuccessful
+## and successful use of chown/chmod) SCAP asks for chown32 but is not a valid system call so it was removed.
+# CCE 14058-2
+-a always,exit -F arch=b32 -S chown -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S chown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S chown -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S chown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S chmod -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S chmod -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S chmod -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S chmod -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fchmod -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fchmod -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fchmod -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fchmod -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fchmodat -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fchmodat -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fchmodat -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fchmodat -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fchown -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fchown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fchown -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fchown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fchownat -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fchownat -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fchownat -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fchownat -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fremovexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fremovexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S fsetxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S fsetxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S fsetxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S fsetxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S lchown -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S lchown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S lchown -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S lchown -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S lremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S lremovexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S lremovexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S lremovexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S lsetxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S lsetxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S lsetxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S lsetxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S removexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S removexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S removexattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S removexattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b32 -S setxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b32 -S setxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+-a always,exit -F arch=b64 -S setxattr -F auid=0 -k perm_mod
+-a always,exit -F arch=b64 -S setxattr -F auid>=500 -F auid!=4294967295 -k perm_mod
+
+##- Use of privileged commands (unsuccessful and successful)
+## use find /bin -type f -perm -04000 2>/dev/null and put all those files in a rule like this
+
+-a always,exit -F path=/sbin/mount.nfs -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/sbin/pam_timestamp_check -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/sbin/netreport -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/sbin/unix_chkpwd -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/ping -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/cgclassify -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/mount -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/umount -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/cgexec -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/su -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/bin/ping6 -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/sbin/userhelper -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/sbin/usernetctl -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/sbin/postdrop -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/sbin/postqueue -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/wall -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/newgrp -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/staprun -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/gpasswd -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/sudo -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/passwd -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/crontab -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/pkexec -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/ksu -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/write -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/at -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/ssh-agent -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/chfn -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/chage -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/locate -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/bin/chsh -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/libexec/openssh/ssh-keysign -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/libexec/abrt-action-install-debuginfo-to-abrt-cache -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/libexec/utempter/utempter -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+-a always,exit -F path=/usr/libexec/pt_chown -F perm=x -F auid>=500 -F auid!=4294967295 -k privileged
+
+##- Export to media (successful)
+# CCE 14569-8
+-a always,exit -F arch=b32 -S mount -F auid>=500 -F auid!=4294967295 -k export
+-a always,exit -F arch=b32 -S mount -F auid=0 -k export
+-a always,exit -F arch=b64 -S mount -F auid>=500 -F auid!=4294967295 -k export
+-a always,exit -F arch=b64 -S mount -F auid=0 -k export
+
+##- Files and programs deleted by the user (successful and unsuccessful)
+# CCE 14820-5 and CCI-000126 Currently generates audit error because arch is required and regex term does not look for arch
+-a exit,always -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -S rmdir -F auid>=500 -F auid!=4294967295 -k delete
+-a exit,always -F arch=b32 -S unlink -S unlinkat -S rename -S renameat -S rmdir -F auid=0 -k delete
+-a exit,always -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -S rmdir -F auid>=500 -F auid!=4294967295 -k delete
+-a exit,always -F arch=b64 -S unlink -S unlinkat -S rename -S renameat -S rmdir -F auid=0 -k delete
+
+
+##- All system administration actions
+# CCE 14824-7
+-w /etc/sudoers -p wa -k actions
+
+## Ensure we collect information on kernal module loading and unloading
+# CCE 14688-6 and CCI-000126
+-w /sbin/insmod -p x -k modules
+-w /sbin/rmmod -p x -k modules
+-w /sbin/modprobe -p x -k modules
+-a exit,always -F arch=b32 -S init_module -S delete_module -k modules
+-a exit,always -F arch=b64 -S init_module -S delete_module -k modules
+
+##The audit system must be configured to audit failed attempts to access files and programs
+# CCI-000126
+#-a exit,always -F arch=b32 -S open -F exit=-EPERM
+#-a exit,always -F arch=b64 -S open -F exit=-EPERM
+#-a exit,always -F arch=b32 -S open -F exit=-EACCES
+#-a exit,always -F arch=b64 -S open -F exit=-EACCES
+#-a exit,always -F arch=b32 -S open -F success=0
+#-a exit,always -F arch=b64 -S open -F success=0
+
+#-a exit,always -F arch=b32 -S creat -F exit=-EPERM
+#-a exit,always -F arch=b64 -S creat -F exit=-EPERM
+#-a exit,always -F arch=b32 -S creat -F exit=-EACCES
+#-a exit,always -F arch=b64 -S creat -F exit=-EACCES
+#-a exit,always -F arch=b32 -S creat -F success=0
+#-a exit,always -F arch=b64 -S creat -F success=0
+
+#-a exit,always -F arch=b32 -S openat -F exit=-EPERM
+#-a exit,always -F arch=b64 -S openat -F exit=-EPERM
+#-a exit,always -F arch=b32 -S openat -F exit=-EACCES
+#-a exit,always -F arch=b64 -S openat -F exit=-EACCES
+#-a exit,always -F arch=b32 -S openat -F success=0
+#-a exit,always -F arch=b64 -S openat -F success=0
+
+#-a exit,always -F arch=b32 -S truncate -F exit=-EPERM
+#-a exit,always -F arch=b64 -S truncate -F exit=-EPERM
+#-a exit,always -F arch=b32 -S truncate -F exit=-EACCES
+#-a exit,always -F arch=b64 -S truncate -F exit=-EACCES
+#-a exit,always -F arch=b32 -S truncate -F success=0
+#-a exit,always -F arch=b64 -S truncate -F success=0
+
+-a exit,always -F arch=b32 -S ftruncate -F exit=-EPERM
+-a exit,always -F arch=b64 -S ftruncate -F exit=-EPERM
+-a exit,always -F arch=b32 -S ftruncate -F exit=-EACCES
+-a exit,always -F arch=b64 -S ftruncate -F exit=-EACCES
+-a exit,always -F arch=b32 -S ftruncate -F success=0
+-a exit,always -F arch=b64 -S ftruncate -F success=0
+-a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid>=500 -F auid!=4294967295 -k access
+-a always,exit -F arch=b64 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid>=500 -F auid!=4294967295 -k access
+-a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid>=500 -F auid!=4294967295 -k access
+-a always,exit -F arch=b64 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid>=500 -F auid!=4294967295 -k access
+-a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid=0 -k access
+-a always,exit -F arch=b64 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EACCES -F auid=0 -k access
+-a always,exit -F arch=b32 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid=0 -k access
+-a always,exit -F arch=b64 -S creat -S open -S openat -S truncate -S ftruncate -F exit=-EPERM -F auid=0 -k access
+
+## The audit system must be configured to audit account creation
+# CCI-000018
+-w /usr/sbin/useradd -p wxa -k identity
+-w /usr/sbin/groupadd -p wxa -k identity
+
+## The audit system must be configured to audit account modification
+# CCI-001403
+-w /usr/sbin/usermod -p wxa -k identity
+-w /usr/sbin/groupmod -p wxa -k identity
+
+##The audit system must be configured to audit account disabling
+# CCI-001404
+-w /usr/bin/passwd -p wxa -k identity
+
+##The audit system must be configured to audit account termination
+# CCI-001405
+-w /usr/sbin/userdel -p wxa -k identity
+-w /usr/sbin/groupdel -p wxa -k identity
+
+## The audit system must be configured to audit all administrative, privileged, and security actions
+# CCE-14051-7 and CCI-000347
+-w /etc/audit.rules -p wa -k identity
+-w /etc/audit/audit.rules -p wa -k identity
+-a exit,always -F arch=b32 -S sched_setparam -S sched_setscheduler
+-a exit,always -F arch=b64 -S sched_setparam -S sched_setscheduler
+
+## Make the configuration immutable - reboot is required to change audit rules
+-e 1

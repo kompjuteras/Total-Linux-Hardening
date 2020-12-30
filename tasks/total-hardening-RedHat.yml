@@ -1,0 +1,1551 @@
+# Users will not be able to see processes of the other users. Root can see the all.
+- name: Set hidepid=2 in /etc/fstab so users cannot see pids of other users (RHEL7,8)
+  block:
+    - name: Set hidepid=2 in /etc/fstab so users cannot see pids of other users
+      lineinfile:
+        path: /etc/fstab
+        line: "proc  /proc  proc  defaults,hidepid=2,gid=nohidproc  0  0"
+        regexp: "^proc.*"
+        state: present
+        backup: yes
+      register: hidepid
+    - name: Ensure group "nohidproc" exists - needed for hidepid
+      group:
+        name: nohidproc
+        state: present
+        gid: 23
+    - name: Add the group nohidproc as asecondary to polkitd
+      user:
+        name: polkitd
+        groups: nohidproc
+        append: yes
+    - name: Remount /proc if changed in fstab
+      mount:
+        path: /proc
+        opts: defaults,hidepid=2,gid=nohidproc
+        state: remounted
+      when: hidepid.changed
+    - name: Restart polkit service (RedHat/CentOS 7,8)
+      service:
+        name: 'polkit'
+        state: restarted
+      when: >
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+# Just a quick text reformat of fstab file
+- name: Reformat content of /etc/fstab
+  block:
+    - name: Create normal output for fstab to /tmp/fstab.temp
+      shell: grep -v '^#' /etc/fstab | column -t > /tmp/fstab.temp
+      changed_when: false
+    - name: Apply /tmp/fstab.temp to /etc/fstab
+      copy:
+        src: /tmp/fstab.temp
+        dest: /etc/fstab
+        remote_src: yes
+        backup: yes
+      register: fstab_reformat
+    - name: Delete /tmp/fstab.temp
+      file:
+        path: /tmp/fstab.temp
+        state: absent
+      when: fstab_reformat.changed
+
+# The most problematic part for most of the Linux admins. It will remove bash history.
+- name: Disable storage of Bash history (kill bash_history)
+  block:
+    - name: Disable the storage of Bash History
+      blockinfile:
+        path: /etc/bashrc
+        marker: "########## {mark} Disable the storage of Bash History ##########"
+        backup: yes
+        block: |
+          export HISTFILESIZE=0
+          unset HISTFILE
+    - name: Add small notice related to bash history in /etc/profile for confused users
+      lineinfile:
+        path: /etc/profile
+        state: present
+        line: "### Bash history is deleted and disabled. Please check /etc/bashrc or /etc/bash.bashrc"
+  when: disable_bash_history
+  tags: BASH_HISTORY
+
+- name: Install some common packages (RedHat/CentOS 6,7)
+  yum:
+    name:
+      - authconfig
+      - yum-plugin-security
+    state: present
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 )
+
+- name: Install some common packages (RedHat/CentOS 8)
+  yum:
+    name: "authconfig"
+    state: present
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8
+
+# Disable some of the most problematic services if they exists
+- name: Services
+  block:
+    - name: Disable unnecessary and dangerous services
+      service:
+        name: '{{ item }}'
+        state: stopped
+        enabled: no
+      failed_when: false
+      with_items:
+        - xinetd
+        - cups
+        - cups.socket
+        - cups-browsed
+        - slapd
+        - rsyncd
+        - smb
+        - smbd
+        - anacron
+        - bluetooth
+        - hidd
+        - hplip
+        - irda
+        - kdump
+        - pcscd
+        - readahead_early
+        - readahead_later
+    - name: Disable non-tftp services in xinetd.d
+      replace: regexp="disable\s+=\s+[^yes]" replace="  disable = yes" dest=/etc/xinetd.d/{{ item }}
+      with_items:
+        - chargen-stream
+        - chargen-dgram
+        - daytime-dgram
+        - daytime-stream
+        - discard-dgram
+        - discard-stream
+        - echo-dgram
+        - tcpmux-server
+        - time-dgram
+        - time-stream
+      ignore_errors: true
+      failed_when: false
+    - name: Disable rhnsd
+      service:
+        name: rhnsd
+        enabled: no
+        state: stopped
+      failed_when: false
+    - name: Ensure crond is enabled
+      block:
+      - name: Ensure crond is enabled
+        service:
+          name: crond
+          enabled: yes
+          state: started
+      - name: Disable automounting
+        service:
+          name: autofs
+          enabled: no
+          state: stopped
+        failed_when: false
+
+- name: Disable unused and dangerous filesystems
+  block:
+    - name: Disable unused filesystems
+      copy:
+        dest: "/etc/modprobe.d/stig-items.conf"
+        mode: '0644'
+        selevel: "s0"
+        setype: "modules_conf_t"
+        serole: "object_r"
+        seuser: "system_u"
+        content: |
+          install cramfs /bin/true
+          install freevxfs /bin/true
+          install jffs2 /bin/true
+          install hfs /bin/true
+          install hfsplus /bin/true
+          install squashfs /bin/true
+          install udf /bin/true
+          install vfat /bin/true
+          options ipv6 disable=1
+          install dccp /bin/true
+          install sctp /bin/true
+          install rds /bin/true
+          install tipc /bin/true
+
+# If you use some yours repositories and you don't use gpgcheck, after this task - it will fail for use.
+# All packages needs to be signed with related GPG signature, otherwise its not secure.
+- name: Ensure yum GPG keys are configured
+  block:
+    - name: Set master yum.conf gpgcheck to '1'
+      replace:
+        dest: /etc/yum.conf
+        regexp: '^gpgcheck\s*=\s*[^1]*$'
+        replace: "gpgcheck = 1"
+    - name: Find all repo files in /etc/yum.repos.d/
+      find:
+        paths: "/etc/yum.repos.d"
+        patterns: "*.repo"
+      register: yumrepos
+    - name: Set all repos gpgchecks to '1'
+      replace:
+        dest: "{{ item.path }}"
+        regexp: '^gpgcheck\s*=\s*[^1]*$'
+        replace: gpgcheck = 1
+      with_items: "{{ yumrepos.files }}"
+
+
+- name: Set single user password (RedHat/CentOS 7,8)
+  block:
+    - name: Set single user password (RedHat/CentOS 7,8)
+      replace:
+        dest: /usr/lib/systemd/system/{{ item }}
+        regexp: '^ExecStart=-((?!/bin/sh\s+-c\s+\"\s+/sbin/sulogin).)*'
+        replace: "ExecStart=-/bin/sh -c \"/sbin/sulogin; /usr/bin/systemctl --fail --no-block default\""
+      with_items:
+        - rescue.service
+        - emergency.service
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Set single user password (RedHat/CentOS 6)
+  block:
+    - name: Set single user password (RedHat/CentOS 6)
+      replace:
+        dest: /etc/sysconfig/init
+        regexp: '^SINGLE=.*'
+        replace: "SINGLE=/sbin/sulogin"
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+
+- name: Kernel Hardening
+  block:
+    - name: Set relevant kernel paramters
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        reload: yes
+        state: present
+        sysctl_set: yes
+      loop:
+        - { name: 'fs.suid_dumpable', value: '0' }
+        - { name: 'kernel.core_uses_pid', value: '1' }
+        - { name: 'kernel.ctrl-alt-del', value: '0' }
+        - { name: 'kernel.dmesg_restrict', value: '1' }
+        - { name: 'kernel.kptr_restrict', value: '2' }
+        - { name: 'kernel.perf_event_paranoid', value: '3' }
+        - { name: 'kernel.randomize_va_space', value: '2' }
+        - { name: 'kernel.sysrq', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.all.bootp_relay', value: '0' }
+        - { name: 'net.ipv4.conf.all.forwarding', value: '0' }
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { name: 'net.ipv4.conf.all.proxy_arp', value: '0' }
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_source_route', value: '0' }
+        - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { name: 'net.ipv4.tcp_timestamps', value: '1' }
+        - { name: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv6.conf.all.accept_source_route', value: '0' }
+        - { name: 'net.ipv6.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv6.conf.default.accept_source_route', value: '0' }
+    - name: Set relevant kernel paramters (RedHat/CentOS 6)
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        reload: yes
+        state: present
+        sysctl_set: yes
+      loop:
+        - { name: 'kernel.exec-shield', value: '1' }
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+    # RedHat/CentOS 7,8
+    - name: Set relevant kernel paramters (RedHat/CentOS 7,8)
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        reload: yes
+        state: present
+        sysctl_set: yes
+      loop:
+        - { name: 'fs.protected_hardlinks', value: '1' }
+        - { name: 'fs.protected_symlinks', value: '1' }
+        - { name: 'kernel.yama.ptrace_scope', value: '1' }
+        - { name: 'net.core.bpf_jit_harden', value: '2' }
+      when: >
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+    # RedHat/CentOS 8
+    - name: Set relevant kernel paramters (RedHat/CentOS 8)
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        reload: yes
+        state: present
+        sysctl_set: yes
+      loop:
+        - { name: 'fs.protected_fifos', value: '2' }
+        - { name: 'fs.protected_regular', value: '2' }
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8
+    # All RedHat/CentOS    
+    - name: Setup kernel parameters on non-docker systems
+      block:
+        - name: Check is docker or podman installed
+          shell: rpm -qa | grep "docker\|podman"
+          args:
+           warn: false
+          register: docker
+          failed_when: false
+        - name: Setup kernel parameters on non-docker systems
+          sysctl:
+            name: "{{ item.name }}"
+            value: "{{ item.value }}"
+            reload: yes
+            state: present
+            sysctl_set: yes
+          loop:
+            - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+            - { name: 'net.ipv4.ip_forward', value: '0' }
+          when: docker.stdout | length == 0
+  tags: KERNEL
+
+- name: Disable display manager if graphical desktop not needed (RedHat/CentOS 6)
+  block:
+    - name: Disable display manager if graphical desktop not needed (RedHat/CentOS 6)
+      block:
+        - name: Get default runlevel (RedHat/CentOS 6)
+          shell: grep ^id /etc/inittab | cut -d ':' -f2
+          register: default_runlevel_out_6
+          changed_when: false
+        - name: Disable the gdm display manager if system is not in graphical.target (RedHat/CentOS 6)
+          service:
+            name: gdm
+            enabled: no
+            state: stopped
+          when: default_runlevel_out_6.stdout|int != 3
+          ignore_errors: true
+        - name: Set current runlevel to 3 (RedHat/CentOS 6)
+          command: init 3
+          when: default_runlevel_out_6.stdout|int != 3
+        - name: Set default runlevel to 3 (RedHat/CentOS 6)
+          lineinfile:
+            path: /etc/inittab
+            regexp: '^id'
+            line: 'id:3:initdefault:'
+            owner: root
+            group: root
+            mode: '0644'
+            backup: yes
+          when: default_runlevel_out_6.stdout|int != 3
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+
+- name: Changes to LILO, EFI and GRUB
+  block:
+    - name: Check if the EFI directory exists
+      find:
+        paths: "/boot/efi/EFI"
+        pattern: grub.cfg
+        recurse: true
+      register: efidir
+    - debug: msg="{{ efidir.files[0].path }}"
+      when: >
+        efidir.files
+    - name: Set variable for grub.cfg in EFI location (RedHat/CentOS 7,8)
+      set_fact:
+        grub_cfg_path: "{{ efidir.files[0].path }}"
+      when: >
+        efidir.files and
+        (( ansible_os_family == "RedHat" and ansible_distribution_version|int == 7 ) or
+         ( ansible_os_family == "RedHat" and ansible_distribution_version|int == 8 ))
+    - name: Check if the LILO path exists
+      stat:
+        path: "/boot/grub2/grub.cfg"
+      register: grubdir
+    - name: Set variable for grub.cfg in LILO location (RedHat/CentOS 7,8)
+      set_fact:
+        grub_cfg_path: "{{ grubdir.stat.path }}"
+      when: >
+        grubdir.stat.path is defined and
+        (( ansible_os_family == "RedHat" and ansible_distribution_version|int == 7 ) or
+         ( ansible_os_family == "RedHat" and ansible_distribution_version|int == 8 ))
+    - name: Set chmod 600 on grub.cfg (RedHat/CentOS 7,8)
+      file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: 0600
+      loop:
+        - "{{ grub_cfg_path }}"
+        - /boot/grub2/grubenv
+      when: >
+        (( ansible_os_family == "RedHat" and ansible_distribution_version|int == 7 ) or
+         ( ansible_os_family == "RedHat" and ansible_distribution_version|int == 8 ))
+    - name: Ensure SELinux is not disabled in bootloader configuration
+      replace:
+        dest: /etc/default/grub
+        regexp: "{{ item }}"
+        replace: ""
+      with_items:
+        - selinux=0
+        - enforcing=0
+      when: >
+        ( selinux is defined and selinux != "Disabled" ) and
+        (( ansible_os_family == "RedHat" and ansible_distribution_version|int == 7 ) or
+         ( ansible_os_family == "RedHat" and ansible_distribution_version|int == 8 ))
+    - name: Find if IPv6 is currently in the grub file and disable it
+      block:
+        - name: Find if IPv6 is currently in the grub file, shows changed when it is in the file
+          lineinfile:
+            path: /etc/default/grub
+            regexp: '^\s*GRUB_CMDLINE_LINUX.*ipv6.disable=1'
+            state: absent
+          check_mode: yes
+          changed_when: false
+          register: ipv6_disable_grub
+          failed_when: false
+        - name: Disable IPv6 in grub
+          replace:
+            path: /etc/default/grub
+            regexp: '^GRUB_CMDLINE_LINUX="'
+            replace: 'GRUB_CMDLINE_LINUX="ipv6.disable=1 '
+          when: ipv6_disable_grub.changed
+        - name: Rebuild grub
+          command: /usr/sbin/grub2-mkconfig -o /boot/grub2/grub.cfg
+          when: ipv6_disable_grub.changed
+  tags: GRUB
+
+- name: Disable display manager if graphical desktop not needed (RedHat/CentOS 7/8)
+  block:
+    - name: Disable display manager if graphical desktop not needed - SYSTEMD
+      block:
+        - name: Get default runlevel (RedHat/CentOS 7/8)
+          stat:
+            path: /etc/systemd/system/default.target
+          register: default_runlevel_out
+        - name: Disable the gdm display manager if system is not in graphical.target (RedHat/CentOS 7/8)
+          systemd:
+            name: gdm
+            enabled: no
+            masked: yes
+            state: stopped
+            daemon-reload: yes
+          when: default_runlevel_out.stat.lnk_target is search("graphical.target")
+        - name: Set current runlevel to multi-user.target (RedHat/CentOS 7/8)
+          command: /usr/bin/systemctl isolate multi-user.target
+          register: isolate_out
+          changed_when: isolate_out.changed
+          when: default_runlevel_out.stat.lnk_target is search("graphical.target")
+        - name: Det default runlevel to multi-user.target (RedHat/CentOS 7/8)
+          file:
+            src: /lib/systemd/system/multi-user.target
+            dest: /etc/systemd/system/default.target
+            owner: root
+            group: root
+          when: default_runlevel_out.stat.lnk_target is search("graphical.target")
+      when: >
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Disable nfs-server if it's not used
+  block:
+    - name: Check is there some content in /etc/exports
+      shell: |
+        grep -v "^[[:space:]]*#\|^[[:space:]]*$" /etc/exports
+      register: exports_content
+      failed_when: false
+      changed_when: false
+    - name: Stop and disable NFS service (RedHat/CentOS 6)
+      service:
+        name: nfs
+        state: stopped
+        enabled: no
+      failed_when: false
+      when: >
+        ( exports_content.stdout | length == 0 ) and
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6 )
+    - name: Stop and disable NFS service (RedHat/CentOS 7,8)
+      service:
+        name: nfs-server
+        state: stopped
+        enabled: no
+      failed_when: false
+      when: >
+        ( exports_content.stdout | length == 0 ) and
+        (( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+         ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 ))
+
+- name: TCP Wrappers (RedHat/CentOS 6/7)
+  block:
+    - name: Install tcpwrappers (RedHat/CentOS 6,7)
+      yum:
+        name: tcp_wrappers
+        state: present
+    - name: Create basic hosts.allow
+      lineinfile:
+        dest: /etc/hosts.allow
+        owner: root
+        group: root
+        mode: 0644
+        line: "ALL: 127.0.0.1"
+    - name: Set permissions on tcpwrappers files (RedHat/CentOS 6,7)
+      file:
+        path: "{{ item }}"
+        owner: root
+        group: root
+        mode: 0644
+      loop:
+        - /etc/hosts.allow
+        - /etc/hosts.deny
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 )
+
+- name: Configure PAM files and password requirements (RedHat/CentOS 6)
+  block:
+    - name: Configure PAM files and password requirements (system-auth) (RedHat/CentOS 6)
+      copy:
+        dest: /etc/pam.d/system-auth
+        content: |
+           #%PAM-1.0
+           # Default rules plus some specific hardening
+           # User changes will be destroyed the next time authconfig is run.
+           auth        required      pam_tally2.so deny=5 onerr=fail unlock_time=900
+           auth        sufficient    pam_unix.so try_first_pass nullok
+           auth        required      pam_deny.so
+           account     required      pam_tally2.so
+           password    required      pam_cracklib.so dcredit=-1 ucredit=-1 lcredit=-1 minlen=8 retry=5 reject_username
+           password    required      pam_pwhistory.so use_authtok remember=5 retry=5
+           password    sufficient    pam_unix.so use_authtok
+           password    required      pam_deny.so
+           session     optional      pam_keyinit.so revoke
+           session     required      pam_limits.so
+           session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+           session     required      pam_unix.so
+    - name: Configure PAM files and password requirements (password-auth) | (RedHat/CentOS 6)
+      copy:
+        dest: /etc/pam.d/password-auth
+        content: |
+           #%PAM-1.0
+           # Default rules plus some specific hardening
+           # User changes will be destroyed the next time authconfig is run.
+           auth        required      pam_tally2.so deny=5 onerr=fail unlock_time=900
+           auth        sufficient    pam_unix.so try_first_pass nullok
+           auth        required      pam_deny.so
+           account     required      pam_tally2.so
+           password    required      pam_cracklib.so dcredit=-1 ucredit=-1 lcredit=-1 minlen=8 retry=5 reject_username
+           password    required      pam_pwhistory.so use_authtok remember=5 retry=5
+           password    sufficient    pam_unix.so use_authtok
+           password    required      pam_deny.so
+           session     optional      pam_keyinit.so revoke
+           session     required      pam_limits.so
+           session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+           session     required      pam_unix.so
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+
+- name: Configure PAM files and password requirements (RedHat/CentOS 7,8)
+  block:
+    - name: Setup /etc/security/pwquality.conf (RedHat/CentOS 7,8)
+      copy:
+        dest: "/etc/security/pwquality.conf"
+        mode: '0644'
+        content: |
+          difok = 5
+          minlen = 8
+          dcredit = -1
+          ucredit = -1
+          lcredit = -1
+          ocredit = -1
+          minclass = 4
+          maxrepeat = 3
+          maxclassrepeat = 0
+    - name: Configure PAM files and password requirements (system-auth) (RedHat/CentOS 7,8)
+      copy:
+        dest: /etc/pam.d/system-auth
+        content: |
+           #%PAM-1.0
+           # Default rules plus some specific hardening
+           # User changes will be destroyed the next time authconfig is run.
+           auth        required      pam_env.so
+           auth        required      pam_faillock.so preauth silent audit deny=5 unlock_time=900
+           auth        sufficient    pam_unix.so try_first_pass
+           auth        [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
+           auth        sufficient    pam_faillock.so authsucc audit deny=5 unlock_time=900
+           auth        requisite     pam_succeed_if.so uid >= 1000 quiet_success
+           auth        required      pam_deny.so
+           account     required      pam_unix.so
+           account     sufficient    pam_localuser.so
+           account     sufficient    pam_succeed_if.so uid < 1000 quiet
+           account     required      pam_permit.so
+           account     required      pam_faillock.so
+           # Password Quality now set in /etc/security/pwquality.conf
+           password    required      pam_pwquality.so try_first_pass local_users_only retry=5 authtok_type=
+           password    requisite     pam_pwhistory.so remember=5 use_authtok
+           password    sufficient    pam_unix.so sha512 shadow try_first_pass use_authtok
+           password    required      pam_deny.so
+           session     optional      pam_keyinit.so revoke
+           session     required      pam_limits.so
+           -session     optional     pam_systemd.so
+           session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+           session     required      pam_unix.so
+    - name: Configure PAM files and password requirements (password-auth) | (RedHat/CentOS 7/8)
+      copy:
+        dest: /etc/pam.d/password-auth
+        content: |
+           #%PAM-1.0
+           # Default rules plus some specific hardening
+           # User changes will be destroyed the next time authconfig is run.
+           auth        required      pam_env.so
+           auth        required      pam_faillock.so preauth silent audit deny=5 unlock_time=900
+           auth        sufficient    pam_unix.so try_first_pass
+           auth        [default=die] pam_faillock.so authfail audit deny=5 unlock_time=900
+           auth        sufficient    pam_faillock.so authsucc audit deny=5 unlock_time=900
+           auth        requisite     pam_succeed_if.so uid >= 1000 quiet_success
+           auth        required      pam_deny.so
+           account     required      pam_unix.so
+           account     sufficient    pam_localuser.so
+           account     sufficient    pam_succeed_if.so uid < 1000 quiet
+           account     required      pam_permit.so
+           account     required      pam_faillock.so
+           # Password Quality now set in /etc/security/pwquality.conf
+           password    required      pam_pwquality.so try_first_pass local_users_only retry=5 authtok_type=
+           password    requisite     pam_pwhistory.so remember=5 use_authtok
+           password    sufficient    pam_unix.so sha512 shadow try_first_pass use_authtok
+           password    required      pam_deny.so
+           session     optional      pam_keyinit.so revoke
+           session     required      pam_limits.so
+           -session     optional     pam_systemd.so
+           session     [success=1 default=ignore] pam_succeed_if.so service in crond quiet use_uid
+           session     required      pam_unix.so
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Umasks and login.defs setup
+  block:
+    - name: Lock default services accounts. Needs to be done before setup login.defs
+      block:
+        - name: Get system users for which password will be changed to random UID>0 and <UID_MIN
+          shell: |
+            SYS_UID_MIN="$(awk '/^UID_MIN/ {print $2}' /etc/login.defs)"
+            awk -v a="${SYS_UID_MIN}" -F:   '$3<a {print $1}' /etc/passwd | grep -v "root" | xargs
+          register: sysusers
+          changed_when: false
+        - name: Report for which users password will be changed
+          debug: msg="{{ sysusers.stdout }}"
+          when: sysusers.stdout | length > 0
+          changed_when: true
+        - name: Set some random password (lock) to all fetched system users
+          shell: |
+            for i in {{ sysusers.stdout }} ; do
+              echo "passwd -l ${i}" >> /tmp/provera1
+              passwd -l ${i}
+            done
+        - name: Get all system users (UID>0 and <UID_MIN) except shutdown with access to shell
+          shell: |
+            SYS_UID_MIN="$(awk '/^UID_MIN/ {print $2}' /etc/login.defs)"
+            cat /etc/passwd | grep -v "nologin$\|false$\|^root\|sync\|shutdown\|halt" | awk -v a="${SYS_UID_MIN}" -F: '$3<$a {print $1}'
+          register: sys_wo_nologin
+          failed_when: false
+          changed_when: false
+        - name: Report to user account for which we will set shell to /bin/false
+          debug: msg="Shell will be removed for --> {{ sys_wo_nologin.stdout }}"
+          when: sys_wo_nologin.stdout | length > 0
+        - name: Set /bin/false as a default shell for catched system users
+          shell: |
+            for i in {{ sys_wo_nologin.stdout }} ; do
+              echo "chsh -s /bin/false ${i}" >> /tmp/provera2
+              chsh -s /bin/false ${i}
+            done
+          when: sys_wo_nologin.stdout | length > 0
+        - name: Report to user account there is no sysaccount without /bin/false
+          debug: msg="Noone of system users have access to shell"
+          when: sys_wo_nologin.stdout | length == 0
+        - name: Setup login.defs file (RedHat/CentOS 6)
+          copy:
+            dest: "/etc/login.defs"
+            mode: '0644'
+            content: |
+               MAIL_DIR        /var/spool/mail
+               PASS_MIN_LEN    5
+               PASS_WARN_AGE   7
+               UID_MIN         500
+               UID_MAX         60000
+               SYS_UID_MIN     201
+               SYS_UID_MAX     999
+               GID_MIN         500
+               GID_MAX         60000
+               SYS_GID_MIN     201
+               SYS_GID_MAX     999
+               CREATE_HOME     yes
+               UMASK           077
+               USERGROUPS_ENAB yes
+               ENCRYPT_METHOD  SHA512
+               PASS_MIN_DAYS   7
+               PASS_MAX_DAYS   180
+               FAIL_DELAY      4
+               SHA_CRYPT_MIN_ROUNDS 6000
+               SHA_CRYPT_MAX_ROUNDS 10000
+               FAILLOG_ENAB    yes
+          when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+        - name: Setup login.defs file (RedHat/CentOS 7,8)
+          copy:
+            dest: "/etc/login.defs"
+            mode: '0644'
+            content: |
+               MAIL_DIR        /var/spool/mail
+               PASS_MIN_LEN    5
+               PASS_WARN_AGE   7
+               UID_MIN         1000
+               UID_MAX         60000
+               SYS_UID_MIN     201
+               SYS_UID_MAX     999
+               GID_MIN         1000
+               GID_MAX         60000
+               SYS_GID_MIN     201
+               SYS_GID_MAX     999
+               CREATE_HOME     yes
+               UMASK           077
+               USERGROUPS_ENAB yes
+               ENCRYPT_METHOD  SHA512
+               PASS_MIN_DAYS   7
+               PASS_MAX_DAYS   180
+               FAIL_DELAY      4
+               SHA_CRYPT_MIN_ROUNDS 6000
+               SHA_CRYPT_MAX_ROUNDS 10000
+               FAILLOG_ENAB    yes
+          when: >
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: The system must not have accounts configured with blank or null passwords (RedHat/CentOS 6/7)
+  replace:
+    path: /etc/pam.d/system-auth-ac
+    regexp: ' nullok'
+    replace: ''
+    backup: yes
+  failed_when: false
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 )
+
+
+
+- name: The operating system must disable account identifiers (individuals, groups, roles, and devices) if the password expires.
+  block:
+    - name: Setup INACTIVE=30 in /etc/default/useradd
+      lineinfile:
+        path: /etc/default/useradd
+        regexp: '(.*)INACTIVE(.*)(?!30)'
+        line: INACTIVE=30
+    - name: Find users with hashed password and setup their inactivity period to 30 days
+      shell: |
+        egrep ^[^:]+:[^\!*] /etc/shadow | grep -v "root"  | awk -F":" '$7 != 30 {print $1}' | xargs
+      register: inactive_users_set
+      changed_when: false
+    - name: Report to user accounts for which we will set inactivity period
+      debug: msg="{{ inactive_users_set.stdout_lines }}"
+      when: inactive_users_set.stdout | length > 0
+      changed_when: true
+    - name: Change their password inactivity period to 30 days
+      shell: |
+        for i in {{ inactive_users_set.stdout }} ; do
+          chage --inactive 30 ${i}
+        done
+      when: inactive_users_set.stdout | length > 0
+
+- name: The x86 Ctrl-Alt-Delete key sequence must be disabled (RedHat/CentOS 7/8)
+  systemd:
+    name: ctrl-alt-del.target
+    masked: yes
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+
+- name: Ensure core limits are set and dumps are disabled
+  block:
+    - name: Ensure core soft limits are set
+      pam_limits:
+        dest: /etc/security/limits.conf
+        domain: "*"
+        limit_type: hard
+        limit_item: maxlogins
+        value: "10"
+    - name: Ensure core dumps are restricted fs.suid_dumpable=0
+      sysctl:
+        name: fs.suid_dumpable
+        value: "0"
+        state: present
+        reload: yes
+    - name: Ensure hard limit unlimited is disabled
+      lineinfile:
+        dest: /etc/security/limits.conf
+        state: absent
+        regexp: "^[*].*hard.*core.*unlimited.*"
+    - name: Ensure soft limit unlimited is disabled
+      lineinfile:
+        path: /etc/security/limits.conf
+        regexp: "^[*].*soft.*core.*unlimited.*"
+        state: absent
+        backup: yes
+    - name: Ensure core hard limits are set
+      pam_limits:
+        dest: /etc/security/limits.conf
+        domain: "*"
+        limit_type: hard
+        limit_item: core
+        value: "0"
+    - name: Ensure core soft limits are set
+      pam_limits:
+        dest: /etc/security/limits.conf
+        domain: "*"
+        limit_type: soft
+        limit_item: core
+        value: "0"
+    - name: Disable core dumps in /etc/profile
+      lineinfile:
+        dest: /etc/profile
+        regexp: "^ulimit.*-c.*!0"
+        line: "ulimit -c 0"
+    - name: Disable core dumps in /etc/systemd/coredump.conf (RedHat/CentOS 7,8)
+      lineinfile:
+        dest: /etc/systemd/coredump.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      with_items:
+        - { regexp: '.*ProcessSizeMax=.*', line: 'ProcessSizeMax=0' }
+        - { regexp: '.*Storage=.*', line: 'Storage=none' }
+      when: >
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+        ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Audit log files on a regular basis
+  block:
+    ############################################################################
+    - name: CHMOD 0640 --> Get list of candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(boot.log\|messages\|\
+        syslog.*\|syslog\|auth.log\|secure\|dmesg\|kern.log\|faillog\|cron\|\
+        yum.log\|mail.*\|httpd\|mysql.*\|apache.* \)" -perm /0137 \)
+      register: candidates_0640
+      changed_when: false
+    - name: CHMOD 0640 --> Report candidate files to user
+      debug:
+        msg: "Candidate(s) for chmod 0640 --> {{ candidates_0640.stdout_lines }}"
+      when: candidates_0640.stdout | length > 0
+      changed_when: candidates_0640.stdout | length > 0
+    - name: CHMOD 0640 --> Applying new mode to candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(boot.log\|messages\|\
+        syslog.*\|syslog\|auth.log\|secure\|dmesg\|kern.log\|faillog\|cron\|\
+        yum.log\|mail.*\|httpd\|mysql.*\|apache.* \)" -perm /0137 \) \
+        -exec chmod 0640 {} \;
+      when: candidates_0640.stdout | length > 0
+      changed_when: candidates_0640.stdout | length > 0
+    - name: CHMOD 0660 --> Get list of candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(pacemaker.log\|\
+        pacemaker.log-*\|nsclient.log\)" -perm /0117 \)
+      register: candidates_0660
+      changed_when: false
+    - name: CHMOD 0660 --> Report candidate files to user
+      debug:
+        msg: "Candidate(s) for chmod 0660 --> {{ candidates_0660.stdout_lines }}"
+      when: candidates_0660.stdout | length > 0
+      changed_when: candidates_0660.stdout | length > 0
+    - name: CHMOD 0660 --> Applying new mode to candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(pacemaker.log\|\
+        pacemaker.log-*\|nsclient.log\)" -perm /0117 \) \
+        -exec chmod 0660 {} \;
+      when: candidates_0660.stdout | length > 0
+      changed_when: candidates_0660.stdout | length > 0
+    - name: CHMOD 0733 --> Get list of candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(sudosh\)" -perm /0044 \)
+      register: candidates_0733
+      changed_when: false
+    - name: CHMOD 0733 --> Report candidate files to user
+      debug:
+        msg: "Candidate(s) for chmod 0733 --> {{ candidates_0733.stdout_lines }}"
+      when: candidates_0733.stdout | length > 0
+      changed_when: candidates_0733.stdout | length > 0
+    - name: CHMOD 0733 --> Applying new mode to candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(sudosh\)" -perm /0044 \) \
+        -exec chmod 0733 {} \;
+      when: candidates_0733.stdout | length > 0
+      changed_when: candidates_0733.stdout | length > 0
+    - name: CHMOD 0640 --> boot.log and dmesg log, rc.local workaround for (RedHat/CentOS 6)
+      # Workaround for boot.log and dmesg to survive after reboot
+      lineinfile:
+        dest: "/etc/rc.d/rc.local"
+        line: "{{ item }}"
+        state: present
+      with_items:
+        - chmod 640 /var/log/boot.log
+        - chmod 640 /var/log/dmesg
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+    - name: CHMOD 0664 --> Get list of candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(wtmp\)" -perm /0113 \)
+      register: candidates_0664
+      changed_when: false
+    - name: CHMOD 0664 --> Report candidate files to user
+      debug:
+        msg: "Candidate(s) for chmod 0664 --> {{ candidates_0664.stdout_lines }}"
+      when: candidates_0664.stdout | length > 0
+      changed_when: candidates_0664.stdout | length > 0
+    - name: CHMOD 0664 --> Applying new mode to candidate files
+      shell: |
+        find /var/log -type f \( -regex "/var/log/\(wtmp\)" -perm /0113 \) \
+        -exec chmod 0664 {} \;
+      when: candidates_0664.stdout | length > 0
+      changed_when: candidates_0664.stdout | length > 0
+    - name: CHMOD 0640 --> dmesg log, crontab workaround for (RedHat/CentOS 7)
+      # Workaround for boot.log and dmesg to survive after reboot
+      lineinfile:
+        dest: "/etc/crontab"
+        line: "@reboot root chmod 0640 /var/log/dmesg"
+        state: present
+      when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7
+
+- name: SSHD hardening
+  block:
+    - name: SSHD port changing
+      block:
+        - name: Install packages needed for seport Ansible module (RedHat/CentOS 6,7)
+          yum:
+            name:
+              - libselinux-python
+              - policycoreutils-python
+            state: present
+          when: >
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6 ) or
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 )
+        - name: Install packages needed for seport Ansible module (RedHat/CentOS 8)
+          yum:
+            name: python3-policycoreutils
+            state: present
+          when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8
+        - name: Allow for Selinux to allow sshd to listen on tcp port {{ ssh_port }}
+          seport:
+            ports: '{{ ssh_port }}'
+            proto: tcp
+            setype: ssh_port_t
+            state: present
+          when: ssh_port != 22
+        - name: Allow port {{ ssh_port }} for firewalld (RedHat/CentOS 7,8)
+          firewalld:
+            port: '{{ ssh_port }}/tcp'
+            permanent: yes
+            immediate: yes
+            state: enabled
+          when: >
+            ssh_port != 22 and
+            (( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+             ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 ))
+    - name: Harden sshd_config from the template
+      template:
+        src: "files/sshd/sshd_config-{{ ansible_os_family }}{{ ansible_distribution_major_version }}.template"
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        backup: yes
+        mode: 0600
+      register: sshd_change
+    - name: Restart service sshd
+      service:
+        name: sshd
+        state: restarted
+      when: sshd_change.changed
+    - name: Setup the new port {{ ssh_port }} for followed tasks
+      block:
+        - name: Setup ssh port {{ ssh_port }} for future use in this play
+          set_fact:
+            ansible_port: "{{ ssh_port }}"
+      when: ssh_port != 22
+  tags: SSHD
+
+- name: Lynis recommendations
+  block:
+   - name: Firewire driver disabled
+     copy:
+       dest: "/etc/modprobe.d/blacklist-firewire.conf"
+       mode: '0644'
+       content: |
+          blacklist firewire-ohci
+          blacklist firewire-sbp2
+   - name: CHMOD 0600 --> cron.deny
+     file:
+       path: /etc/cron.deny
+       owner: root
+       group: root
+       mode: 0600
+   - name: CHMOD 0600 --> at.deny
+     file:
+       path: /etc/at.deny
+       owner: root
+       group: root
+       mode: 0600
+     failed_when: false
+   - name: Install psacct and usbguard
+     yum:
+       name: '{{ item }}'
+       state: present
+     loop:
+       - psacct
+       - usbguard
+     failed_when: false
+   - name: Service psacct to be running
+     service:
+       name: psacct
+       state: started
+       enabled: yes
+   - name: DNSSEC supported (systemd-resolved) Lynis check (RedHat/CentOS 8)
+     service:
+       name: systemd-resolved
+       state: started
+       enabled: yes
+     when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8
+   - name: Get users with password and for which password not expiring for 90 days
+     shell: |
+       awk -F":" '$2 ~ /^\$/ && ($5>90 || length($5) == 0) {print $1}' \
+       /etc/shadow | grep -v "root\|nobody" | xargs | grep .
+     register: accounts_password_never_expire
+     changed_when: false
+     failed_when: false
+   - name: Print report to user all users with password and for which password not expiring for 90 days
+     debug:
+       msg: "Non-common users where passwords not expiring for less than 90 days: {{ accounts_password_never_expire.stdout }}"
+     when: accounts_password_never_expire.stdout | length > 0
+     changed_when: true
+   - name: Set password expiration to 180 days for reported users
+     shell: |
+       for USERS in {{ accounts_password_never_expire.stdout }} ; do
+         chage -M 180 ${USERS}
+       done
+     when: accounts_password_never_expire.stdout | length > 0
+   - name: CHMOD 700 --> /usr/bin/as
+     file:
+       dest: /usr/bin/as
+       mode: "0700"
+       owner: root
+       group: root
+   - name: Set umask rules to /etc/init.d/functions, /etc/{bashrc,csh.cshrc,profile}
+     replace:
+       dest: "{{ item }}"
+       regexp: 'umask*.[0-9][0-9][0-9]'
+       replace: "umask 027"
+     loop:
+       - /etc/init.d/functions
+       - /etc/bashrc
+       - /etc/csh.cshrc
+       - /etc/profile
+       - /etc/bash.bashrc
+     failed_when: false
+   - name: Add notice about umask to /etc/profile
+     lineinfile:
+       path: /etc/profile
+       line: "### HARDENING: UMASK is also configured in /etc/init.d/functions, /etc/{bashrc,csh.cshrc,profile} "
+       regexp: '^### HARDENING: UMASK (.*)'
+   - name: Ensure Presence of configured hostname in /etc/hosts
+     lineinfile:
+       path: /etc/hosts
+       line: "{{ ansible_default_ipv4.address|default(ansible_all_ipv4_addresses[0]) }}   {{ ansible_fqdn }} {{ ansible_hostname }}"
+       regexp: "{{ ansible_default_ipv4.address|default(ansible_all_ipv4_addresses[0]) }}.*"
+       state: present
+       backup: yes
+   - name: Disable default USB devices authorization for systemd systems (RedHat/CentOS 7,8)
+     block:
+       - name: Create script for USB devices authorization (RedHat/CentOS 7,8)
+         copy:
+           dest: "/usr/local/bin/USB-authorization"
+           mode: '0750'
+           content: |
+             #!/bin/sh
+             # Disable default USB devices authorization
+             if [[ $(ls -l /sys/bus/usb/devices/usb*/authorized* 2>/dev/null | wc -l ) -gt 0 ]] ; then
+               for USB in $(ls /sys/bus/usb/devices/usb*/authorized*) ; do
+                 echo 0 > "$USB"
+               done
+             fi
+       - name: Create systemd for USB devices authorization (RedHat/CentOS 7,8)
+         copy:
+           dest: "/etc/systemd/system/USB-authorization.service"
+           mode: '0644'
+           content: |
+             [Unit]
+             Description=Disable default USB devices authorization. Hardening step.
+
+             [Service]
+             Type=simple
+             ExecStart=/bin/bash /usr/local/bin/USB-authorization
+
+             [Install]
+             WantedBy=multi-user.target
+         register: usbauth
+       - name: Reload systemd daemon, enable and restart USB-authorization.service (RedHat/CentOS 7,8)
+         systemd:
+           name: USB-authorization.service
+           state: restarted
+           enabled: yes
+           daemon_reload: yes
+         when: usbauth.changed
+     when: >
+       ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+       ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Configure system auditing (RedHat/CentOS 6)
+  block:
+    - name: Setup audit (RedHat/CentOS 6)
+      copy:
+        dest: /etc/audit/audit.rules
+        src: files/aurules/RedHat6-audit.rules
+        owner: root
+        group: root
+        mode: 0600
+    - name: Restart auditd (RedHat/CentOS 6)
+      service:
+        name: auditd
+        state: restarted
+        enabled: yes
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+
+- name: Configure system auditing (RedHat/CentOS 7,8)
+  block:
+    - name: Setup audit (RedHat/CentOS 7,8)
+      block:
+        - name: Configure audit log storage size
+          replace:
+            path: /etc/audit/auditd.conf
+            regexp: "{{ item.find }}"
+            replace: "{{ item.replace }}"
+          loop:
+            - { find: '^max_log_file\s+=\s+[^8]', replace: 'max_log_file = 8'}
+            - { find: '^max_log_file_action\s+=\s+((?!keep_logs).)*$', replace: 'max_log_file_action = keep_logs' }
+            - { find: '^space_left_action\s+=\s+((?!email).)*$', replace: 'space_left_action = email' }
+            - { find: '^action_mail_acct\s+=\s+((?!root).)*$', replace: 'action_mail_acct = root' }
+            - { find: '^admin_space_left_action\s+=\s+((?!suspend).)*$', replace: 'admin_space_left_action = suspend' }
+        - name: Ensure auditing for processes that start prior to auditd (RedHat/CentOS 7,8)
+          lineinfile:
+            path: /etc/default/grub
+            regexp: '^\s*GRUB_CMDLINE_LINUX.*audit=1'
+            state: absent
+          check_mode: yes
+          changed_when: false
+          register: audit_exist
+          failed_when: false
+        - name: Enable audit service in grub (RedHat/CentOS 7,8)
+          replace:
+            path: /etc/default/grub
+            regexp: '^GRUB_CMDLINE_LINUX="'
+            replace: 'GRUB_CMDLINE_LINUX="audit=1 '
+          register: grub_has_changed
+          when: audit_exist.changed
+        - name: Rebuild grub (RedHat/CentOS 7,8)
+          command: /usr/sbin/grub2-mkconfig -o /boot/grub2/grub.cfg
+          when: grub_has_changed.changed
+        - name: Ensure to collect events that modify date/time (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/datetime.rules
+            src: files/aurules/datetime.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure events that modify user/group information are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/user-group-info.rules
+            src: files/aurules/user-group-info.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure to collect events that modify network (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/network.rules
+            src: files/aurules/network.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure system logins are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/login.rules
+            src: files/aurules/login.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure session initiation information is collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/sessions.rules
+            src: files/aurules/sessions.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Determine the Minimum UID for new, non-system, accounts (RedHat/CentOS 7,8)
+          command: "/usr/bin/awk '/^s*UID_MIN/{print $2}' /etc/login.defs"
+          register: min_uid
+          changed_when: min_uid.rc == "2"
+        - name: Ensure modifications to discretionary access controls are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/dac.rules
+            src: files/aurules/dac.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure unsuccessful unauthorized file access attempts are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/bad-file-access.rules
+            content:
+            src: files/aurules/bad-file-access.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure successful file system mounts are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/file-system-mounts.rules
+            src: files/aurules/file-system-mounts.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure file deletion events by users are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/delete.rules
+            src: files/aurules/delete.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Set sudoer log (RedHat/CentOS 7,8)
+          set_fact:
+            sudo_log: '/var/log/sudoers'
+        - name: Ensure sysadmin actions (sudolog) are collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/sudolog.rules
+            src: files/aurules/sudolog.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure kernel module loading and unloading is collected (RedHat/CentOS 7,8)
+          template:
+            dest: /etc/audit/rules.d/modules.rules
+            src: files/aurules/modules.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Ensure audit configuration is immutable (RedHat/CentOS 7,8)
+          copy:
+            dest: /etc/audit/rules.d/99-finalize.rules
+            content: |
+              -e 2
+            owner: root
+            group: root
+            mode: 0600
+        - name: Custom audit rules (RedHat/CentOS 7,8)
+          copy:
+            dest: /etc/audit/rules.d/audit.rules
+            src: files/aurules/{{ ansible_os_family }}-audit.rules
+            owner: root
+            group: root
+            mode: 0600
+        - name: Restart auditd (RedHat/CentOS 7,8)
+          service:
+            name: auditd
+            state: started
+            enabled: yes
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Firewall setup - only ping and SSH will be allowed (RedHat/CentOS 6)
+  block:
+    - name: Allow iptables and enable sshd (RedHat/CentOS 6)
+      block:
+        - name: Setup default iptables rules (only SSH and ping will be allowed) (RedHat/CentOS 6)
+          copy:
+            dest: "/etc/sysconfig/iptables"
+            backup: yes
+            content: |
+              # Hardening - default rules, only SSH and ping is allowed. Backup of previous
+              # iptables config is created, list /etc/sysconfig/iptables*
+              *filter
+              :INPUT ACCEPT [0:0]
+              :FORWARD ACCEPT [0:0]
+              :OUTPUT ACCEPT [0:0]
+              -A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+              -A INPUT -s 127.0.0.1/32 -j ACCEPT
+              -A INPUT -i lo -j ACCEPT
+              -A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+              -A INPUT -p tcp -m tcp --dport {{ ssh_port }} -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+              -A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+              -A INPUT -m conntrack --ctstate INVALID -j DROP
+              -A INPUT -j DROP
+              -A OUTPUT -o lo -j ACCEPT
+              -A OUTPUT -m conntrack --ctstate ESTABLISHED -j ACCEPT
+              -A OUTPUT -p tcp -m tcp --sport {{ ssh_port }} -m conntrack --ctstate ESTABLISHED -j ACCEPT
+              COMMIT
+          register: iptablesrhel6
+        - name: Start and enable iptables (RedHat/CentOS 6)
+          service:
+            name: 'iptables'
+            state: restarted
+            enabled: yes
+          when: iptablesrhel6.changed
+  when: ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 6
+  tags: FIREWALL
+
+- name: Firewall setup - only ping and SSH will be allowed (RedHat/CentOS 7,8)
+  block:
+    - name: Install firewalld (will allow only ssh) (RedHat/CentOS 7,8)
+      yum:
+        name: firewalld
+        state: present
+    - name: Disable iptables and nftables (RedHat/CentOS 7,8)
+      service:
+        name: '{{ item }}'
+        state: stopped
+        enabled: no
+        masked: yes
+      ignore_errors: true
+      failed_when: false
+      loop:
+        - iptables
+        - nftables
+    - name: Add port {{ ssh_port }} to firewalld SSH service (RedHat/CentOS 7,8)
+      lineinfile:
+        path: "/usr/lib/firewalld/services/ssh.xml"
+        line: '  <port protocol="tcp" port="{{ ssh_port }}"/> '
+        insertbefore: '</service>'
+      when: ssh_port != 22
+    - name: Start and enable firewalld (RedHat/CentOS 7,8)
+      service:
+        name: firewalld
+        state: started
+        enabled: yes
+  when: >
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+    ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+
+- name: Install AIDE
+  block:
+    - name: Install aide packages
+      yum:
+        name: aide
+        state: present
+      register: aide_install
+    - name: Remove log file for AIDE (we will use stdout and redirection to file instead)
+      lineinfile:
+        dest: /etc/aide.conf
+        state: absent
+        regexp: "^report_url=file(.*)"
+    - name: Setup path for AIDE database_out file
+      lineinfile:
+        dest: /etc/aide.conf
+        line: database_out=file:/var/lib/aide/aide.db.new.gz
+        regexp: "^database_out=.*"
+    - name: Setup path for AIDE database file
+      lineinfile:
+        dest: /etc/aide.conf
+        line: database=file:/var/lib/aide/aide.db.gz
+        regexp: "^database=.*"
+    - name: Logrotate rule for AIDE
+      copy:
+        dest: "/etc/logrotate.d/aide"
+        mode: "0644"
+        content: |
+          /var/log/aide/aide.log {
+            monthly
+            maxsize 300M
+            missingok
+            rotate 12
+            compress
+            dateext
+            notifempty
+            copytruncate
+          }
+    - name: Create AIDE script which will be used for crontab
+      copy:
+        dest: "/usr/local/sbin/aide.sh"
+        mode: "0700"
+        owner: root
+        group: root
+        content: |
+          #!/bin/bash
+          mkdir -p /var/log/aide/
+          if [ ! -f /var/lib/aide/aide.db.gz ]; then
+            nice -n19 /usr/sbin/aide --init
+            mv -f /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+          else
+            nice -n19 /usr/sbin/aide --check 1>>/var/log/aide/aide.log
+            nice -n19 /usr/sbin/aide --update
+            rm -f /var/lib/aide/aide.db.gz
+            mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+          fi
+    - name: Create a cron entry for AIDE (daily check and 04:50)
+      cron:
+        name: AIDE checks (hardening)
+        minute: "50"
+        hour: "04"
+        user: root
+        job: "/usr/local/sbin/aide.sh &>/dev/null"
+        state: present
+    - name: Check if the Aide db exists (if exists init will be skipped)
+      stat:
+        path: "/var/lib/aide/aide.db.gz"
+      register: aidedb
+  when: install_aide
+  tags: AIDE
+
+# OSSEC will be installed as a local install. If you use some remote OSSEC server, please skip this.
+- name: Setup OSSEC
+  block:
+    - name: Check does /apps/ossec exists and does ossec process exists
+      block:
+        - name: Check does ossec running
+          shell: pgrep ossec | wc -l
+          register: ossec_pids
+          changed_when: false
+          failed_when: false
+        - name: Delete /apps/ossec and /var/ossec if there are no running OSSEC processes (will be reinstalled)
+          file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /var/ossec
+            - /apps/ossec
+          when: ossec_pids.stdout|int == 0
+    - name: Setup OSSEC, local install
+      block:
+        - name: Extract ossec-hids.tar.gz into /root/
+          unarchive:
+            src: files/OSSEC/ossec-hids.tar.gz
+            dest: /root/
+        - name: Extract pcre2-10.32.tar.gz into /root/ossec-hids/src/external
+          unarchive:
+            src: files/OSSEC/pcre2-10.32.tar.gz
+            dest: /root/ossec-hids/src/external
+        - name: Create OSSEC preloaded-vars.conf file
+          copy:
+            dest: "/root/ossec-hids/etc/preloaded-vars.conf"
+            content: |
+              USER_LANGUAGE="en"
+              USER_NO_STOP="y"
+              USER_INSTALL_TYPE="local"
+              USER_DIR="/apps/ossec"
+              USER_ENABLE_EMAIL="n"
+              USER_ENABLE_ACTIVE_RESPONSE="n"
+              USER_ENABLE_SYSCHECK="y"
+              USER_ENABLE_ROOTCHECK="y"
+              #### exit ? ###
+        - name: Enable a optional-rpms repository (RedHat 6,7)
+          rhsm_repository:
+            name: rhel-{{ ansible_distribution_major_version|int }}-server-optional-rpms
+            state: enabled
+          when: >
+            ( ansible_distribution == 'RedHat' and ansible_distribution_major_version|int == 6 ) or
+            ( ansible_distribution == 'RedHat' and ansible_distribution_major_version|int == 7 )
+        - name: Install OSSEC dependent packages
+          yum:
+            name:
+              - zlib-devel
+              - make
+              - gcc
+              - sqlite-devel
+              - openssl-devel
+              - libevent-devel
+            state: present
+          ignore_errors: false
+        - name: Install OSSEC from source
+          shell: PCRE2_SYSTEM=no /root/ossec-hids/install.sh
+          ignore_errors: false
+        - name: Setup OSSEC Selinux policy (RedHat/CentOS 7,8)
+          block:
+            - name: Copy OSSEC Selinux module (RedHat/CentOS 7,8)
+              copy:
+                src: files/OSSEC/SelinuxRHEL7plus
+                dest: /root/ossec-hids/
+            - name: Install OSSEC selinux module (RedHat/CentOS 7,8)
+              command: semodule -i /root/ossec-hids/SelinuxRHEL7plus/ossec-rhel7plus-selinux.pp
+          ignore_errors: false
+          when: >
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 7 ) or
+            ( ansible_os_family == 'RedHat' and ansible_distribution_major_version|int == 8 )
+        - name: Delete OSSEC installation folder
+          file:
+            path: "/root/ossec-hids"
+            state: absent
+        - name: Start and enable OSSEC
+          service:
+            name: ossec
+            state: started
+            enabled: yes
+        - name: Logrotate rule for OSSEC
+          copy:
+            dest: "/etc/logrotate.d/ossec"
+            mode: "0644"
+            content: |
+              /apps/ossec/logs/ossec.log {
+                monthly
+                maxsize 300M
+                missingok
+                rotate 12
+                compress
+                dateext
+                notifempty
+                copytruncate
+              }
+        - name: Remove installed gcc to satisfy compiler audit check
+          yum:
+            name: gcc
+            state: absent
+      when: ossec_pids.stdout|int == 0 and not system_use_remote_ossec_server
+  tags: OSSEC
+
+- name: Check will server survive the reboot, just for anycase
+  reboot:
+    reboot_timeout: 900
+    connect_timeout: 20
+  when: reboot_is_approved
+  tags: REBOOT
+
+# Basicaly, this is not needed, but is OK to check audit score, from time to time
+# You can remove this from server with: rm -rf /root/lynis
+- name: Copy Lynis setup to server
+  block:
+    - name: Copy Lynis to server
+      block:
+        - name: Check does /root/lynis exists
+          stat:
+            path: /root/lynis
+          register: lynis
+        - name: Extract lynis.tar.gz into /root/
+          unarchive:
+            src: files/Lynis/lynis.tar.gz
+            dest: /root/
+          when: not lynis.stat.exists
+        - name: Delete /tmp/lynis.tar.gz
+          file:
+            path: /tmp/lynis.tar.gz
+            state: absent
+      tags: LYNIS_INSTALL
+    - name: Check Lynis audit score
+      block:
+        - name: Run Lynis audit scan
+          shell: |
+            cd /root/lynis
+            ./lynis audit system
+          changed_when: false
+        - name: Check Lynus audit score
+          shell: grep 'Hardening index' /var/log/lynis.log | cut -d " " -f 3- | grep -o '[[:digit:]]*'
+          register: audit_score
+          changed_when: false
+        - name: Show audit score and info (less than 85/100 is compliance fail)
+          debug: msg='Hardening index --> {{ audit_score.stdout }}/100'
+          failed_when: audit_score.stdout|int < 85
+          ignore_errors: true
+      tags: LYNIS_SCAN
+  tags: LYNIS

@@ -1,0 +1,2 @@
+For update just delete ossec-hids.tar.gz, download new version from the https://www.ossec.net/downloads/, and rename it both gz and tar inside to ossec-hids.
+Version 3.3.0 is stucked with SLES12SP3 for now. 

@@ -1,0 +1,41 @@
+# Default values for RedHat 6
+Port {{ ssh_port }}
+SyslogFacility AUTHPRIV
+PasswordAuthentication yes
+ChallengeResponseAuthentication yes
+GSSAPICleanupCredentials yes
+UsePAM yes
+AcceptEnv LANG LC_CTYPE LC_NUMERIC LC_TIME LC_COLLATE LC_MONETARY LC_MESSAGES
+AcceptEnv LC_PAPER LC_NAME LC_ADDRESS LC_TELEPHONE LC_MEASUREMENT
+AcceptEnv LC_IDENTIFICATION LC_ALL LANGUAGE
+AcceptEnv XMODIFIERS
+Subsystem       sftp    /usr/libexec/openssh/sftp-server
+
+# Harden values
+Protocol 2
+GSSAPIAuthentication no
+X11Forwarding no
+UsePrivilegeSeparation yes
+Compression no
+KerberosAuthentication no
+IgnoreUserKnownHosts yes
+PrintLastLog yes
+LogLevel VERBOSE
+MaxAuthTries 3
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitRootLogin no
+PermitEmptyPasswords no
+PermitUserEnvironment no
+MaxSessions 2
+AllowTcpForwarding no
+ClientAliveInterval 300
+ClientAliveCountMax 0
+LoginGraceTime 60
+Banner /etc/issue.net
+
+# Lynis recommendation
+StrictModes yes 
+AllowAgentForwarding no
+TCPKeepAlive no
+UseDNS no

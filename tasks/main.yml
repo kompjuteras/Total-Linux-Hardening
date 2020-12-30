@@ -1,0 +1,8 @@
+---
+# tasks file for total-linux-hardening
+
+- name: Run tasks common to all Linux systems
+  include: total-hardening-ALL.yml
+
+- name: Run OS-family related tasks
+  include: total-hardening-{{ ansible_os_family }}.yml
