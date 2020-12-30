@@ -327,7 +327,7 @@
 - name: Configure PAM files and password requirements
   block:
     - name: Check is password policy applied
-      shell: grep -c 'minlen=14 dcredit=-1 ucredit=-1 lcredit=-1 ocredit=-1' /etc/pam.d/common-password
+      command: grep -c 'minlen=14 dcredit=-1 ucredit=-1 lcredit=-1 ocredit=-1' /etc/pam.d/common-password
       register: suse_pam
       failed_when: false
       changed_when: false

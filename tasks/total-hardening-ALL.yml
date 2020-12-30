@@ -1165,11 +1165,8 @@
       loop: "{{ audit_logs.stdout_lines }}"
       when: audit_logs.stdout | length > 0
       failed_when: false
-
-- name: Ensure audit log folder have mode 0644 and owned by root
-  block:
     - name: Find rsyslog log folder from /etc/audit/auditd.conf
-      shell: dirname "{{ audit_logs.stdout_lines }}"
+      command: dirname "{{ audit_logs.stdout_lines }}"
       register: audit_logs_folder
       failed_when: false
       changed_when: false
