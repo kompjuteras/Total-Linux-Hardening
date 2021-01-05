@@ -32,7 +32,7 @@ Also, there are much work for manual steps, like required partitions are missing
 What is missing
 =========
 - AppArmor setup for SLES
-- Test on SLE 12 and SLE 15 (guess it will work as usual, but I didn't test it)
+- Test on SLE 12 and SLE 15 (I am sure it will work as usual, but I didn't test it. I did tests on SLES for SAP Applications)
 
 
 Requirements
