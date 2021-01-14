@@ -1,30 +1,19 @@
 - name: For now this hardening support only SLES12+, RHEL6-8, CentOS6-8
-  debug:
-    msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} is not supported OS for this play"
-  failed_when: >
-    ansible_distribution not in ['RedHat', 'CentOS', 'Suse', 'SLES_SAP'] or
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 6 )) and
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 7 )) and
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 8 )) or
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 6 )) and
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 7 )) and
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 8 )) or
-    (( ansible_distribution == 'Suse' ) and ( ansible_distribution_major_version|int != 12 )) and
-    (( ansible_distribution == 'Suse' ) and ( ansible_distribution_major_version|int != 15 )) or
-    (( ansible_distribution == 'SLES_SAP' ) and ( ansible_distribution_major_version|int != 12 )) and
-    (( ansible_distribution == 'SLES_SAP' ) and ( ansible_distribution_major_version|int != 15 ))
-  when: >
-    ansible_distribution not in ['RedHat', 'CentOS', 'Suse', 'SLES_SAP'] or
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 6 )) and
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 7 )) and
-    (( ansible_distribution == 'RedHat' ) and ( ansible_distribution_major_version|int != 8 )) or
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 6 )) and
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 7 )) and
-    (( ansible_distribution == 'CentOS' ) and ( ansible_distribution_major_version|int != 8 )) or
-    (( ansible_distribution == 'Suse' ) and ( ansible_distribution_major_version|int != 12 )) and
-    (( ansible_distribution == 'Suse' ) and ( ansible_distribution_major_version|int != 15 )) or
-    (( ansible_distribution == 'SLES_SAP' ) and ( ansible_distribution_major_version|int != 12 )) and
-    (( ansible_distribution == 'SLES_SAP' ) and ( ansible_distribution_major_version|int != 15 ))
+  assert:
+    that:
+      - ( ansible_distribution == 'RedHat'   and ( ansible_distribution_major_version == '6'  )) or
+        ( ansible_distribution == 'RedHat'   and ( ansible_distribution_major_version == '7'  )) or
+        ( ansible_distribution == 'RedHat'   and ( ansible_distribution_major_version == '8'  )) or
+        ( ansible_distribution == 'CentOS'   and ( ansible_distribution_major_version == '6'  )) or
+        ( ansible_distribution == 'CentOS'   and ( ansible_distribution_major_version == '7'  )) or
+        ( ansible_distribution == 'CentOS'   and ( ansible_distribution_major_version == '8'  )) or
+        ( ansible_distribution == 'SLES_SAP' and ( ansible_distribution_major_version == '12' )) or
+        ( ansible_distribution == 'SLES_SAP' and ( ansible_distribution_major_version == '15' )) or
+        ( ansible_distribution == 'Suse'     and ( ansible_distribution_major_version == '12' )) or
+        ( ansible_distribution == 'Suse'     and ( ansible_distribution_major_version == '15' ))
+    fail_msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} is not supported, host will be skipped"
+    success_msg: "{{ ansible_distribution }} {{ ansible_distribution_version }} is supported"
+  ignore_errors: false
   tags: SUPPORTED_OS
 
 - name: Strictly forbiden filesystems
